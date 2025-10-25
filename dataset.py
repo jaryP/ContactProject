@@ -127,10 +127,6 @@ class Protein:
             if len(new_row) < n_pos:
                 new_row += [i - mn] * (n_pos - len(new_row))
 
-            # if len(new_row) == 0:
-            #     # there are no positives. In that case we use evaluate the residual against itself
-            #     pos_index = np.asarray([i - mn])
-            # else:
             pos_index = np.random.choice(new_row, n_pos)
 
             # zeroing the probability of positive indexes from the sampling list
@@ -159,10 +155,10 @@ class Protein:
 
         res_range = None
         if truncation_seq_length is not None:
-            if truncation_seq_length < len(residues):
+            if truncation_seq_length < len(self):
                 # mn, mx = 0, len(residues)
                 if truncation_mode == 'random':
-                    mn = np.random.randint(0, max(len(residues) - truncation_seq_length, len(residues)))
+                    mn = np.random.randint(0, min(len(self) - truncation_seq_length, len(self)))
                     mx = mn + truncation_seq_length
                 else:
                     mn, mx = 0, truncation_seq_length
@@ -171,12 +167,14 @@ class Protein:
                 label_matrix = label_matrix[mn:mx, mn:mx]
                 res_range = (mn, mx)
 
+                assert len(residues) <= truncation_seq_length
+
         if self._testing_protein:
-            return {'residues': residues, 'label_matrix': label_matrix, 'length': len(residues)}
+            return {'residues': residues, 'label_matrix': label_matrix, 'length': len(self)}
         else:
             pos_res, neg_res = self.sample_tuple(n_pos=n_pos, n_neg=n_neg, residues_range=res_range)
             return {'residues': residues, 'label_matrix': label_matrix,
-                    'pos_res': pos_res, 'neg_res': neg_res, 'length': len(residues)}
+                    'pos_res': pos_res, 'neg_res': neg_res, 'length': len(self)}
 
 
 class ProteinDataset(Dataset):
