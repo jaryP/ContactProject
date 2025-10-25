@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 from utils import CustomParser, get_protein_collate_fn
 
+
 MAPPING = {'ALA': 'A',
            'ARG': 'R',
            'ASP': 'D',
@@ -37,73 +38,138 @@ MAPPING = {'ALA': 'A',
            }
 
 
+# https://colab.research.google.com/github/facebookresearch/esm/blob/main/examples/contact_prediction.ipynb#scrollTo=n4FBkOUaWuXb&line=1&uniqifier=1
+def extend(a, b, c, L, A, D):
+    """
+    input:  3 coords (a,b,c), (L)ength, (A)ngle, and (D)ihedral
+    output: 4th coord
+    """
+
+    def normalize(x):
+        return x / np.linalg.norm(x, ord=2, axis=-1, keepdims=True)
+
+    bc = normalize(b - c)
+    n = normalize(np.cross(b - a, bc))
+    m = [bc, np.cross(n, bc), n]
+    d = [L * np.cos(A), L * np.sin(A) * np.cos(D), -L * np.sin(A) * np.sin(D)]
+    return c + sum([m * d for m, d in zip(m, d)])
+
+
+def calculate_contacts(positions: np.ndarray, contact_threshold: float = 8):
+    dist_matrix = np.linalg.norm(positions[:, None, :] - positions[None, :, :], axis=-1)
+    dist_matrix -= (contact_threshold + 1) * np.eye(len(dist_matrix))
+
+    dist_matrix = np.maximum(dist_matrix > contact_threshold, 0.0, dist_matrix)
+
+    return [np.nonzero(row)[0] for row in dist_matrix], (dist_matrix > 0).astype(float)
+
+
 class Protein:
     def __init__(self, chains: Generator[Structure],
-                 # beta_sheets,
-                 # alpha_helices,
                  modres: dict[int, str] = None,
                  contact_threshold: float = 8.0,
-                 atom_to_use: str = 'CA',
                  testing_protein: bool = False):
 
         assert contact_threshold > 0, 'contact_threshold must be positive'
-        assert atom_to_use == 'CA', 'Now only CA atom is supported.'
 
         if modres is None:
             modres = {}
 
         self._testing_protein = testing_protein
 
-        self._residues = []
-        self._residues_pos = []
+        self._residues = ''
+        # self._residues_pos = []
 
         self._residues_chain_id = []
+        _residues_coord = {'ca': [], 'cb': []}
 
         for chain in chains:
             chain_residues = []
-            chain_residues_pos = []
+
+            chain_calpha_coords = []
+            chain_cbeta_coords = []
 
             for ri, r in enumerate(chain):
-                if atom_to_use not in r:
+                # skip hetero residues
+                if 'CA' not in r or r.id[0].startswith('H_'):
                     continue
 
-                r_coord = r[atom_to_use].coord
+                # r_coord = r[atom_to_use].coord
                 r_name = r.resname
 
-                if r_name not in MAPPING or r.id[0].startswith('H_'):
+                if r_name not in MAPPING:
                     # let's skip non-standard residues from HET lines
                     # but not the modified amino acids (if modres line is present)
-
                     r_name = modres.get(ri + 1, None)
+
+                if r_name is None:
+                    continue
+
+                c_alpha = r['CA'].coord
+
+                if not all(atom in r for atom in ['CA', 'N', 'C']):
+                    c_beta = c_alpha
+                else:
+                    CA = r['CA'].coord
+                    N = r['N'].coord
+                    C = r['C'].coord
+
+                    c_beta = extend(C, N, CA, 1.522, 1.927, -2.143)
 
                 # manages edge cases (e.g., file 5OL5.pdb has incomplete modres information)
                 if r_name is not None and r_name != '':
-                    chain_residues.append(MAPPING[r_name])
-                    chain_residues_pos.append(r_coord)
+                    # chain_residues.append(MAPPING[r_name])
 
-            self._residues_chain_id.append((chain.id, len(chain_residues)))
+                    # chain_calpha_coords.append(r_coord)
+                    # chain_cbeta_coords.append(c_beta)
 
-            self._residues.extend(chain_residues)
-            self._residues_pos.extend(chain_residues_pos)
+                    self._residues += MAPPING[r_name]
+                    _residues_coord['ca'].append(c_alpha)
+                    _residues_coord['cb'].append(c_beta)
 
-        self._residues = ''.join(self._residues)
-        self._residues_pos = np.asarray(self._residues_pos)
+                    self._residues_chain_id.append(chain.id)
 
-        dist_matrix = np.linalg.norm(self._residues_pos[:, None, :] - self._residues_pos[None, :, :], axis=-1)
-        dist_matrix -= (contact_threshold + 1) * np.eye(len(dist_matrix))
+            # self._residues_chain_id.append((chain.id, len(chain_residues)))
 
-        # we set to zero values that are higher than the contact_threshold
-        # the next line should be the fastest way to do it
-        dist_matrix[np.logical_or(dist_matrix < 0, dist_matrix > contact_threshold)] = 0
-        # dist_matrix = np.maximum(dist_matrix, 0, dist_matrix)
+            # self._residues.extend(chain_residues)
+            # self._residues_pos.extend(chain_calpha_coords)
 
-        self._contact_indices = [np.nonzero(row)[0] for row in dist_matrix]
-        self._gt_matrix = (dist_matrix > 0).astype(float)
+            # self._residues_coord['ca'].append(chain_calpha_coords)
+            # self._residues_coord['cb'].append(chain_cbeta_coords)
+
+        # self._residues = ''.join(self._residues)
+        # self._residues_pos = np.asarray(self._residues_pos)
+
+        # _residues_coord['ca'] = np.asarray(self._residues_coord['ca'])
+        # _residues_coord['cb'] = np.asarray(self._residues_coord['cb'])
+
+        self._gt_matrix = {}
+        self._contacts_idx = {}
+
+        for k, v in _residues_coord.items():
+            ca_contacts_idx, ca_matrix = calculate_contacts(np.asarray(_residues_coord[k]))
+
+            self._gt_matrix[k] = ca_matrix
+            self._contacts_idx[k] = ca_contacts_idx
+
+        a = 0
+
+        # cb_matrix, cb_contacts_idx = calculate_contacs(self._residues_coord['cb'])
+        #
+        #
+        # dist_matrix = np.linalg.norm(self._residues_pos[:, None, :] - self._residues_pos[None, :, :], axis=-1)
+        # dist_matrix -= (contact_threshold + 1) * np.eye(len(dist_matrix))
+        #
+        # # dist_matrix[dist_matrix > contact_threshold] = 0
+        # dist_matrix = np.maximum(dist_matrix > contact_threshold, 0.0, dist_matrix)
+        #
+        # self._contact_indices = [np.nonzero(row)[0] for row in dist_matrix]
+        # self._gt_matrix = (dist_matrix > 0).astype(float)
 
     def __len__(self):
         return len(self._residues)
 
-    def sample_tuple(self, n_pos: int = 1, n_neg: int = 1, residues_range: Tuple[int, int] = None):
+    def sample_tuple(self, contact_type: str, n_pos: int = 1, n_neg: int = 1, residues_range: Tuple[int, int] = None):
 
         pos, neg = [], []
 
@@ -115,7 +181,7 @@ class Protein:
         mx = min(mx, len(self))
         indices = np.arange(mx - mn)
 
-        for i, row in enumerate(self._contact_indices):
+        for i, row in enumerate(self._contacts_idx[contact_type]):
             if not mn <= i < mx:
                 continue
 
@@ -143,17 +209,20 @@ class Protein:
         return np.asarray(pos), np.asarray(neg)
 
     def __call__(self,
+                 contact_type: str = 'cb',
                  truncation_mode: str = None,
                  truncation_seq_length: int = None,
                  n_pos: int = 1, n_neg: int = 1,
+                 to_sample: bool = True,
                  *args, **kwargs):
 
+        assert contact_type in self._gt_matrix.keys(), f'contact_type must be in {list(self._gt_matrix.keys())}.'
         assert truncation_mode in ['random', 'cut']
 
         residues = self._residues
-        label_matrix = self._gt_matrix
+        label_matrix = self._gt_matrix[contact_type]
 
-        if self._testing_protein:
+        if not to_sample:
             return {'residues': residues, 'label_matrix': label_matrix, 'length': len(self), 'offset': 0}
         else:
 
@@ -175,7 +244,11 @@ class Protein:
 
             offset = 0 if res_range is None else res_range[0]
 
-            pos_res, neg_res = self.sample_tuple(n_pos=n_pos, n_neg=n_neg, residues_range=res_range)
+            pos_res, neg_res = self.sample_tuple(contact_type=contact_type,
+                                                 n_pos=n_pos,
+                                                 n_neg=n_neg,
+                                                 residues_range=res_range)
+
             return {'residues': residues, 'label_matrix': label_matrix,
                     'pos_res': pos_res, 'neg_res': neg_res, 'length': len(self), 'offset': offset}
 
@@ -184,6 +257,7 @@ class ProteinDataset(Dataset):
     def __init__(self,
                  dataset_path: str,
                  training: bool,
+                 contact_type: str = 'cb',
                  n_pos_sampled: int = 1,
                  n_neg_sampled: int = 1,
                  threshold: float = 8.0,
@@ -192,10 +266,14 @@ class ProteinDataset(Dataset):
                  truncation_seq_length: int = None,
                  truncation_mode: str = 'cut'):
 
+        assert contact_type in ['ca', 'cb'], 'contact_type must be either "ca" or "cb"'
+
         self._truncation_seq_length = truncation_seq_length
         self._truncation_mode = truncation_mode
         self._n_pos_sampled = n_pos_sampled
         self._n_neg_sampled = n_neg_sampled
+        self._training = training
+        self._contact_type = contact_type
 
         self._proteins = []
         # save the files for debugging purposes
@@ -231,8 +309,7 @@ class ProteinDataset(Dataset):
                 structure = parser.get_structure("prot", path)
                 chains = structure.get_chains()
 
-                protein = Protein(chains, modres=parser.modres, contact_threshold=threshold,
-                                  testing_protein=not training)
+                protein = Protein(chains, modres=parser.modres, contact_threshold=threshold)
 
                 if cache_dataset:
                     with open(cached_path, 'wb') as file:
@@ -248,7 +325,9 @@ class ProteinDataset(Dataset):
         return self.proteins[item](truncation_mode=self._truncation_mode,
                                    truncation_seq_length=self._truncation_seq_length,
                                    n_pose=self._n_pos_sampled,
-                                   n_neg=self._n_neg_sampled)
+                                   n_neg=self._n_neg_sampled,
+                                   to_sample=self._training,
+                                   contact_type=self._contact_type)
 
     def __len__(self) -> int:
         return len(self._proteins)
