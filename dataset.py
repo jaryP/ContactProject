@@ -103,7 +103,7 @@ class Protein:
     def __len__(self):
         return len(self._residues)
 
-    def sample_tuple(self, residues_range: Tuple[int, int] = None):
+    def sample_tuple(self, n_pos: int = 1, n_neg: int = 1, residues_range: Tuple[int, int] = None):
 
         pos, neg = [], []
 
@@ -122,18 +122,24 @@ class Protein:
             # we only take residuals in the given range, and offset them
             new_row = [r - mn for r in row if mn <= r < mx]
 
-            if len(new_row) == 0:
-                # there are no positives. In that case we use evaluate the residual against itself
-                pos_index = np.asarray([i - mn])
-            else:
-                pos_index = np.random.choice(new_row, 1)
+            # If number of positives is less then total positive.
+            # In that case we use evaluate the residual against itself
+            if len(new_row) < n_pos:
+                new_row += [i - mn] * (n_pos - len(new_row))
+
+            # if len(new_row) == 0:
+            #     # there are no positives. In that case we use evaluate the residual against itself
+            #     pos_index = np.asarray([i - mn])
+            # else:
+            pos_index = np.random.choice(new_row, n_pos)
 
             # zeroing the probability of positive indexes from the sampling list
             p = np.ones_like(indices)
             # applying the offset
             p[pos_index] = 0
 
-            neg_index = np.random.choice(indices, 1, p=p / p.sum())
+            with_replace = True if n_neg > len(p) else False
+            neg_index = np.random.choice(indices, n_neg, p=p / p.sum(), replace=with_replace)
 
             pos.append(pos_index)
             neg.append(neg_index)
@@ -143,6 +149,7 @@ class Protein:
     def __call__(self,
                  truncation_mode: str = None,
                  truncation_seq_length: int = None,
+                 n_pos: int = 1, n_neg: int = 1,
                  *args, **kwargs):
 
         assert truncation_mode in ['random', 'cut']
@@ -167,7 +174,7 @@ class Protein:
         if self._testing_protein:
             return {'residues': residues, 'label_matrix': label_matrix, 'length': len(residues)}
         else:
-            pos_res, neg_res = self.sample_tuple(res_range)
+            pos_res, neg_res = self.sample_tuple(n_pos=n_pos, n_neg=n_neg, residues_range=res_range)
             return {'residues': residues, 'label_matrix': label_matrix,
                     'pos_res': pos_res, 'neg_res': neg_res, 'length': len(residues)}
 
@@ -176,6 +183,8 @@ class ProteinDataset(Dataset):
     def __init__(self,
                  dataset_path: str,
                  training: bool,
+                 n_pos_sampled: int = 1,
+                 n_neg_sampled: int = 1,
                  threshold: float = 8.0,
                  cache_dataset: bool = True,
                  n_files_to_use: int = -1,
@@ -184,6 +193,8 @@ class ProteinDataset(Dataset):
 
         self._truncation_seq_length = truncation_seq_length
         self._truncation_mode = truncation_mode
+        self._n_pos_sampled = n_pos_sampled
+        self._n_neg_sampled = n_neg_sampled
 
         self._proteins = []
         # save the files for debugging purposes
@@ -234,7 +245,9 @@ class ProteinDataset(Dataset):
 
     def __getitem__(self, item):
         return self.proteins[item](truncation_mode=self._truncation_mode,
-                                   truncation_seq_length=self._truncation_seq_length)
+                                   truncation_seq_length=self._truncation_seq_length,
+                                   n_pose=self._n_pos_sampled,
+                                   n_neg=self._n_neg_sampled)
 
     def __len__(self) -> int:
         return len(self._proteins)
