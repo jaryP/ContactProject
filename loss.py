@@ -2,9 +2,10 @@ import torch
 
 
 class BinaryContrastiveLoss():
-    def __init__(self, detach: bool = False):
+    def __init__(self, average = True, detach: bool = False):
         # TODO: implement a variable for the reduction operation (?)
         self._detach = detach
+        self.average = average
 
     def _get_by_indexing(self, features, indexes):
         indexes = indexes.unsqueeze(-1).expand(-1, -1, -1, features.shape[-1])
@@ -45,4 +46,6 @@ class BinaryContrastiveLoss():
         # remove the effected of padded tokens on the loss
         masked_loss = loss.sum(1) / mask.sum(-1)
 
-        return masked_loss.mean()
+        if self.average:
+            masked_loss = masked_loss.mean()
+        return masked_loss
