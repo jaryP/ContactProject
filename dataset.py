@@ -2,6 +2,7 @@ import os
 import pickle
 
 from collections.abc import Generator
+from typing import List, Tuple
 
 import numpy as np
 from Bio.PDB.Structure import Structure
@@ -93,8 +94,6 @@ class Protein:
 
         # we set to zero values that are higher than the contact_threshold
         # the next line should be the fastest way to do it
-        # TODO mb it is better to set to zero and one, and seve the matrix
-
         dist_matrix[np.logical_or(dist_matrix < 0, dist_matrix > contact_threshold)] = 0
         # dist_matrix = np.maximum(dist_matrix, 0, dist_matrix)
 
@@ -104,45 +103,73 @@ class Protein:
     def __len__(self):
         return len(self._residues)
 
-    def sample_tuple(self):
+    def sample_tuple(self, residues_range: Tuple[int, int] = None):
 
         pos, neg = [], []
-        l = np.arange(len(self._residues))
 
-        for row in self._contact_indices:
-            pos_index = np.random.choice(row, 1)
+        if residues_range is not None:
+            mn, mx = residues_range
+        else:
+            mn, mx = 0, len(self)
+
+        mx = min(mx, len(self))
+        indices = np.arange(mx - mn)
+
+        for i, row in enumerate(self._contact_indices):
+            if not mn <= i < mx:
+                continue
+
+            # we only take residuals in the given range, and offset them
+            new_row = [r - mn for r in row if mn <= r < mx]
+
+            if len(new_row) == 0:
+                # there are no positives. In that case we use evaluate the residual against itself
+                pos_index = np.asarray([i - mn])
+            else:
+                pos_index = np.random.choice(new_row, 1)
 
             # zeroing the probability of positive indexes from the sampling list
-            p = np.ones(len(self._residues))
+            p = np.ones_like(indices)
+            # applying the offset
             p[pos_index] = 0
 
-            neg_index = np.random.choice(l, 1, p=p / p.sum())
+            neg_index = np.random.choice(indices, 1, p=p / p.sum())
 
             pos.append(pos_index)
             neg.append(neg_index)
 
         return np.asarray(pos), np.asarray(neg)
 
-    # @property
-    def __call__(self, *args, **kwargs):
+    def __call__(self,
+                 truncation_mode: str = None,
+                 truncation_seq_length: int = None,
+                 *args, **kwargs):
 
-        # pos_matrix = []
-        # # TODO: vectorial way
-        # for row in self._pos_indices:
-        #     t = np.zeros(len(self._residues))
-        #     t[row] = 1
-        #     pos_matrix.append(t)
+        assert truncation_mode in ['random', 'cut']
 
-        # pos_matrix =
-        # pos_vector = np.zeros(len(self._residues))
-        # pos_vector[self._pos_indices] = 1
+        residues = self._residues
+        label_matrix = self._gt_matrix
+
+        res_range = None
+        if truncation_seq_length is not None:
+            if truncation_seq_length < len(residues):
+                # mn, mx = 0, len(residues)
+                if truncation_mode == 'random':
+                    mn = np.random.randint(0, max(len(residues) - truncation_seq_length, len(residues)))
+                    mx = mn + truncation_seq_length
+                else:
+                    mn, mx = 0, truncation_seq_length
+
+                residues = residues[mn:mx]
+                label_matrix = label_matrix[mn:mx, mn:mx]
+                res_range = (mn, mx)
 
         if self._testing_protein:
-            return {'residues': self._residues, 'label_matrix': self._gt_matrix}
+            return {'residues': residues, 'label_matrix': label_matrix, 'length': len(residues)}
         else:
-            pos_res, neg_res = self.sample_tuple()
-            return {'residues': self._residues, 'label_matrix': self._gt_matrix,
-                    'pos_res': pos_res, 'neg_res': neg_res}
+            pos_res, neg_res = self.sample_tuple(res_range)
+            return {'residues': residues, 'label_matrix': label_matrix,
+                    'pos_res': pos_res, 'neg_res': neg_res, 'length': len(residues)}
 
 
 class ProteinDataset(Dataset):
@@ -150,7 +177,13 @@ class ProteinDataset(Dataset):
                  dataset_path: str,
                  training: bool,
                  threshold: float = 8.0,
-                 n_files_to_use: int = -1):
+                 cache_dataset: bool = True,
+                 n_files_to_use: int = -1,
+                 truncation_seq_length: int=None,
+                 truncation_mode: str = 'cut'):
+
+        self._truncation_seq_length = truncation_seq_length
+        self._truncation_mode = truncation_mode
 
         self._proteins = []
         # save the files for debugging purposes
@@ -172,10 +205,16 @@ class ProteinDataset(Dataset):
             cached_path = os.path.join(dirpath, f'{file}'.replace('pdb', 'cache'))
             path = os.path.join(dirpath, file)
 
-            if os.path.exists(cached_path):
-                with open(cached_path, 'rb') as file:
-                    protein = pickle.load(file)
-            else:
+            protein = None
+
+            if os.path.exists(cached_path) and cache_dataset:
+                try:
+                    with open(cached_path, 'rb') as file:
+                        protein = pickle.load(file)
+                except Exception:
+                    protein = None
+
+            if protein is None:
                 parser = CustomParser(QUIET=True)
                 structure = parser.get_structure("prot", path)
                 chains = structure.get_chains()
@@ -183,19 +222,21 @@ class ProteinDataset(Dataset):
                 protein = Protein(chains, modres=parser.modres, contact_threshold=threshold,
                                   testing_protein=not training)
 
-                with open(cached_path, 'wb') as file:
-                    pickle.dump(protein, file)
+                if cache_dataset:
+                    with open(cached_path, 'wb') as file:
+                        pickle.dump(protein, file)
 
             self._proteins.append(protein)
 
     @property
-    def proteins(self):
+    def proteins(self) -> List[Protein]:
         return self._proteins
 
     def __getitem__(self, item):
-        return self.proteins[item]()
+        return self.proteins[item](truncation_mode=self._truncation_mode,
+                                   truncation_seq_length=self._truncation_seq_length)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self._proteins)
 
 
@@ -224,7 +265,7 @@ if __name__ == '__main__':
     model, alphabet = esm.pretrained.esm2_t12_35M_UR50D()
     batch_converter = alphabet.get_batch_converter()
 
-    loader = DataLoader(dataset, batch_size=32, collate_fn=get_protein_collate_fn(batch_converter))
+    loader = DataLoader(dataset, batch_size=8, collate_fn=get_protein_collate_fn(batch_converter))
     batch = next(iter(loader))
 
     import torch

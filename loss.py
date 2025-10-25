@@ -19,13 +19,15 @@ class BinaryContrastiveLoss():
         return out
 
     def __call__(self, features, positive_index, negative_index):
+        device = features.device
+
         features = torch.nn.functional.normalize(features, p=2, dim=-1)
 
         mask = (positive_index >= 0).squeeze(-1)
         non_masked_values = mask.sum(-1)
 
-        positive_features = self._get_by_indexing(features, positive_index)
-        negative_features = self._get_by_indexing(features, negative_index)
+        positive_features = self._get_by_indexing(features, positive_index.to(device))
+        negative_features = self._get_by_indexing(features, negative_index.to(device))
 
         # pos_dist = torch.norm(features - positive_features, p=2, dim=-1)
         # neg_dist = torch.norm(features - negative_features, p=2, dim=-1)

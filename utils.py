@@ -46,6 +46,8 @@ def get_protein_collate_fn(model_batch_converter):
                 others[k].append(torch.as_tensor(v))
 
         for k, v in others.items():
+            if k == 'length':
+                continue
             if k != 'label_matrix':
                 others[k] = torch.nn.utils.rnn.pad_sequence(v, padding_value=-1, batch_first=True)
             else:
