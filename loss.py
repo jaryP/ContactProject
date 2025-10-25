@@ -7,14 +7,10 @@ class BinaryContrastiveLoss():
         self._detach = detach
 
     def _get_by_indexing(self, features, indexes):
-        # indexes = indexes.expand(-1, -1, features.shape[-1])
-
         indexes = indexes.unsqueeze(-1).expand(-1, -1, -1, features.shape[-1])
 
         # remove padding indices (-1)
         safe_indices = indexes.clamp(min=0)
-
-        # out = torch.gather(features, dim=1, index=safe_indices)
 
         out = torch.gather(features.unsqueeze(1).expand(-1, features.shape[1], -1, -1), 2, safe_indices)
 

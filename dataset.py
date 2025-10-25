@@ -153,28 +153,31 @@ class Protein:
         residues = self._residues
         label_matrix = self._gt_matrix
 
-        res_range = None
-        if truncation_seq_length is not None:
-            if truncation_seq_length < len(self):
-                # mn, mx = 0, len(residues)
-                if truncation_mode == 'random':
-                    mn = np.random.randint(0, min(len(self) - truncation_seq_length, len(self)))
-                    mx = mn + truncation_seq_length
-                else:
-                    mn, mx = 0, truncation_seq_length
-
-                residues = residues[mn:mx]
-                label_matrix = label_matrix[mn:mx, mn:mx]
-                res_range = (mn, mx)
-
-                assert len(residues) <= truncation_seq_length
-
         if self._testing_protein:
-            return {'residues': residues, 'label_matrix': label_matrix, 'length': len(self)}
+            return {'residues': residues, 'label_matrix': label_matrix, 'length': len(self), 'offset': 0}
         else:
+
+            res_range = None
+            if truncation_seq_length is not None:
+                if truncation_seq_length < len(self):
+                    # mn, mx = 0, len(residues)
+                    if truncation_mode == 'random':
+                        mn = np.random.randint(0, min(len(self) - truncation_seq_length, len(self)))
+                        mx = mn + truncation_seq_length
+                    else:
+                        mn, mx = 0, truncation_seq_length
+
+                    residues = residues[mn:mx]
+                    label_matrix = label_matrix[mn:mx, mn:mx]
+                    res_range = (mn, mx)
+
+                    assert len(residues) <= truncation_seq_length
+
+            offset = 0 if res_range is None else res_range[0]
+
             pos_res, neg_res = self.sample_tuple(n_pos=n_pos, n_neg=n_neg, residues_range=res_range)
             return {'residues': residues, 'label_matrix': label_matrix,
-                    'pos_res': pos_res, 'neg_res': neg_res, 'length': len(self)}
+                    'pos_res': pos_res, 'neg_res': neg_res, 'length': len(self), 'offset': offset}
 
 
 class ProteinDataset(Dataset):
@@ -186,7 +189,7 @@ class ProteinDataset(Dataset):
                  threshold: float = 8.0,
                  cache_dataset: bool = True,
                  n_files_to_use: int = -1,
-                 truncation_seq_length: int=None,
+                 truncation_seq_length: int = None,
                  truncation_mode: str = 'cut'):
 
         self._truncation_seq_length = truncation_seq_length
@@ -324,12 +327,12 @@ if __name__ == '__main__':
     #     # remove bos and eos
     #     features = results['representations'][model.num_layers][:, 1:-1]
 #
-    #     pos_tokens = torch.gather(features, dim=1, index=torch.tensor(batch['pos_res']).unsqueeze(0).expand(-1, -1, features.shape[-1])).detach()
-    #     neg_tokens = torch.gather(features, dim=1, index=torch.tensor(batch['neg_res']).unsqueeze(0).expand(-1, -1, features.shape[-1])).detach()
-    #
-    #     pos_loss = torch.norm(features - pos_tokens, p=2, dim=-1)
-    #     neg_loss = 1 / (torch.norm(features - neg_tokens, p=2, dim=-1) + 1e-6)
-    #
-    #     loss = -(pos_loss + neg_loss).log()
-    #
-    #     a = 0
+#     pos_tokens = torch.gather(features, dim=1, index=torch.tensor(batch['pos_res']).unsqueeze(0).expand(-1, -1, features.shape[-1])).detach()
+#     neg_tokens = torch.gather(features, dim=1, index=torch.tensor(batch['neg_res']).unsqueeze(0).expand(-1, -1, features.shape[-1])).detach()
+#
+#     pos_loss = torch.norm(features - pos_tokens, p=2, dim=-1)
+#     neg_loss = 1 / (torch.norm(features - neg_tokens, p=2, dim=-1) + 1e-6)
+#
+#     loss = -(pos_loss + neg_loss).log()
+#
+#     a = 0

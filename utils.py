@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import List
+from typing import List, Sequence
 
 import numpy as np
 import torch
@@ -46,13 +46,15 @@ def get_protein_collate_fn(model_batch_converter):
                 others[k].append(torch.as_tensor(v))
 
         for k, v in others.items():
-            if k == 'length':
+            if k in ['length']:
                 continue
-            if k != 'label_matrix':
+            if k =='offset':
+                others[k] = torch.as_tensor(v)
+            elif k != 'label_matrix':
                 others[k] = torch.nn.utils.rnn.pad_sequence(v, padding_value=-1, batch_first=True)
             else:
-                others[k] = torch.stack([torch.nn.functional.pad(_v, (0, padded_len - _v.shape[-1],
-                                                                      0, padded_len - _v.shape[-1]), value=-1)
+                others[k] = torch.stack([torch.nn.functional.pad(_v, (0, padded_len - _v.shape[-1] - 2,
+                                                                      0, padded_len - _v.shape[-1] - 2), value=-1)
                                          for _v in v], 0)
 
         return {'proteins': strings, **others}
@@ -60,34 +62,35 @@ def get_protein_collate_fn(model_batch_converter):
     return protein_collate_fn
 
 
-def mcc(y_true: np.ndarray, y_pred: np.ndarray, is_global=True, padding_value: int = -1) -> float:
+def mcc(y_true: Sequence[np.ndarray], y_pred: Sequence[np.ndarray], is_global=True, padding_value: int = -1) -> float:
     # The advantages of the Matthews correlation coefficient (MCC)
     # over F1 score and accuracy in binary classification evaluation
 
     if is_global:
-        y_true = y_true.reshape(-1)
-        y_pred = y_pred.reshape(-1)
+        y_true = np.concatenate([y.reshape(-1) for y in y_true])
+        y_pred = np.concatenate([y.reshape(-1) for y in y_pred])
 
-        mask = y_true[y_true != padding_value]
+        mask = y_true != padding_value
 
         score = metrics.matthews_corrcoef(y_true[mask], y_pred[mask])
 
     else:
-        assert len(y_true.shape) == 4
-        assert len(y_pred.shape) == 4
-
-        n_samples, sequence, matrix_row, matrix_cols = y_true.shape
-
-        y_true = y_true.reshape((n_samples, -1))
-        y_pred = y_pred.reshape((n_samples, -1))
+        # assert len(y_true[0].shape) == 3
+        # assert len(y_pred[0].shape) == 3
+        # n_samples, sequence, matrix_row, matrix_cols = y_true[0].shape
+        #
+        # y_true = y_true.reshape((n_samples, -1))
+        # y_pred = y_pred.reshape((n_samples, -1))
 
         score = 0
         for yt, yp in zip(y_true, y_pred):
-            mask = yp[yp != padding_value]
+            yt, yp = yt.reshape(-1), yp.reshape(-1)
+
+            mask = yp != padding_value
 
             score += metrics.matthews_corrcoef(yt[mask], yp[mask])
 
-        score = score / n_samples
+        score = score / len(y_pred)
 
     return score
 
