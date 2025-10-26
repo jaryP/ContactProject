@@ -59,7 +59,8 @@ def calculate_contacts(positions: np.ndarray, contact_threshold: float = 8):
     dist_matrix = np.linalg.norm(positions[:, None, :] - positions[None, :, :], axis=-1)
     dist_matrix -= (contact_threshold + 1) * np.eye(len(dist_matrix))
 
-    dist_matrix = np.maximum(dist_matrix > contact_threshold, 0.0, dist_matrix)
+    dist_matrix[dist_matrix > contact_threshold] = 0
+    # dist_matrix = np.maximum(dist_matrix < contact_threshold, 0.0, dist_matrix)
 
     return [np.nonzero(row)[0] for row in dist_matrix], (dist_matrix > 0).astype(float)
 
@@ -147,7 +148,7 @@ class Protein:
         self._contacts_idx = {}
 
         for k, v in _residues_coord.items():
-            ca_contacts_idx, ca_matrix = calculate_contacts(np.asarray(_residues_coord[k]))
+            ca_contacts_idx, ca_matrix = calculate_contacts(np.asarray(v))
 
             self._gt_matrix[k] = ca_matrix
             self._contacts_idx[k] = ca_contacts_idx
