@@ -3,7 +3,7 @@ dataset:
   contact_type: cb
   sample: No
   truncation_mode: random
-  cache_dataset: No
+  cache_dataset: Yes
 loss:
   _target_: loss.MaskedBCE
 training:

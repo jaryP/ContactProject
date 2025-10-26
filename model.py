@@ -1,24 +1,9 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
-#
-# This source code is licensed under the MIT license found in the
-# LICENSE file in the root directory of this source tree.
 import functools
 from typing import Tuple
 
 import torch
 from esm.rotary_embedding import apply_rotary_pos_emb, RotaryEmbedding
-
-
-# def rotate_half(x):
-#     x1, x2 = x.chunk(2, dim=-1)
-#     return torch.cat((-x2, x1), dim=-1)
-#
-#
-# def apply_rotary_pos_emb(x, cos, sin):
-#     cos = cos[:, : x.shape[-2], :]
-#     sin = sin[:, : x.shape[-2], :]
-#
-#     return (x * cos) + (rotate_half(x) * sin)
+from torch import nn
 
 
 class OffsetRotaryEmbedding(torch.nn.Module):
@@ -86,9 +71,30 @@ class OffsetRotaryEmbedding(torch.nn.Module):
             )
 
 
-if __name__ == "__main__":
-    rotary = OffsetRotaryEmbedding(200)
+class ContactsWrapper(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.backbone = model
 
-    offsets = torch.tensor([10, 0, 25, 100, 1000])
+    def forward(self, input_ids, **kwargs):
+        return self.backbone.predict_contacts(input_ids)
 
-    rotary.get_embedding(offsets, (5, 500, 100))
+
+class ContrastiveWrapper(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.backbone = model
+        self.repr_layers = model.num_layers
+
+    def forward(self, input_ids, **kwargs):
+        h = self.backbone(input_ids, repr_layers=[self.repr_layers])
+        h = h['representations'][self.repr_layers][:, 1:-1]
+
+        if self.training:
+            return h
+        else:
+            logits = torch.nn.functional.cosine_similarity(h[..., None, :, :], h[..., :, None, :], dim=-1)
+
+            # rescale in range [0, 1] for compatibility purposes
+            logits = (logits + 1)/2
+            return logits
