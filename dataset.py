@@ -6,6 +6,7 @@ from typing import List, Tuple
 
 import numpy as np
 from Bio.PDB.Structure import Structure
+from scipy.spatial.distance import pdist, squareform
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
@@ -56,14 +57,22 @@ def extend(a, b, c, L, A, D):
 
 
 def calculate_contacts(positions: np.ndarray, contact_threshold: float = 8):
-    dist_matrix = np.linalg.norm(positions[:, None, :] - positions[None, :, :], axis=-1)
-    dist_matrix -= (contact_threshold + 1) * np.eye(len(dist_matrix))
+    idxs = []
+    gt = []
 
-    dist_matrix[dist_matrix > contact_threshold] = 0
-    # dist_matrix = np.maximum(dist_matrix < contact_threshold, 0.0, dist_matrix)
+    # iterating is more efficient for big molecules, since we don't need to store distances anyway
 
-    return [np.nonzero(row)[0] for row in dist_matrix], (dist_matrix > 0).astype(float)
+    for i, atom in enumerate(positions):
+        dist = np.linalg.norm(atom - positions, axis=-1)
 
+        dist = (dist < contact_threshold).astype(float)
+        dist[i] = 0
+
+        idxs.append(np.flatnonzero(dist))
+
+        gt.append(dist)
+
+    return idxs, np.asarray(gt)
 
 class Protein:
     def __init__(self, chains: Generator[Structure],
@@ -79,7 +88,6 @@ class Protein:
         self._testing_protein = testing_protein
 
         self._residues = ''
-        # self._residues_pos = []
 
         self._residues_chain_id = []
         _residues_coord = {'ca': [], 'cb': []}
@@ -95,7 +103,6 @@ class Protein:
                 if 'CA' not in r or r.id[0].startswith('H_'):
                     continue
 
-                # r_coord = r[atom_to_use].coord
                 r_name = r.resname
 
                 if r_name not in MAPPING:
@@ -119,30 +126,12 @@ class Protein:
 
                 # manages edge cases (e.g., file 5OL5.pdb has incomplete modres information)
                 if r_name is not None and r_name != '':
-                    # chain_residues.append(MAPPING[r_name])
-
-                    # chain_calpha_coords.append(r_coord)
-                    # chain_cbeta_coords.append(c_beta)
 
                     self._residues += MAPPING[r_name]
                     _residues_coord['ca'].append(c_alpha)
                     _residues_coord['cb'].append(c_beta)
 
                     self._residues_chain_id.append(chain.id)
-
-            # self._residues_chain_id.append((chain.id, len(chain_residues)))
-
-            # self._residues.extend(chain_residues)
-            # self._residues_pos.extend(chain_calpha_coords)
-
-            # self._residues_coord['ca'].append(chain_calpha_coords)
-            # self._residues_coord['cb'].append(chain_cbeta_coords)
-
-        # self._residues = ''.join(self._residues)
-        # self._residues_pos = np.asarray(self._residues_pos)
-
-        # _residues_coord['ca'] = np.asarray(self._residues_coord['ca'])
-        # _residues_coord['cb'] = np.asarray(self._residues_coord['cb'])
 
         self._gt_matrix = {}
         self._contacts_idx = {}
@@ -152,20 +141,6 @@ class Protein:
 
             self._gt_matrix[k] = ca_matrix
             self._contacts_idx[k] = ca_contacts_idx
-
-        a = 0
-
-        # cb_matrix, cb_contacts_idx = calculate_contacs(self._residues_coord['cb'])
-        #
-        #
-        # dist_matrix = np.linalg.norm(self._residues_pos[:, None, :] - self._residues_pos[None, :, :], axis=-1)
-        # dist_matrix -= (contact_threshold + 1) * np.eye(len(dist_matrix))
-        #
-        # # dist_matrix[dist_matrix > contact_threshold] = 0
-        # dist_matrix = np.maximum(dist_matrix > contact_threshold, 0.0, dist_matrix)
-        #
-        # self._contact_indices = [np.nonzero(row)[0] for row in dist_matrix]
-        # self._gt_matrix = (dist_matrix > 0).astype(float)
 
     def __len__(self):
         return len(self._residues)
@@ -193,6 +168,7 @@ class Protein:
             # In that case we use evaluate the residual against itself
             if len(new_row) < n_pos:
                 new_row += [i - mn] * (n_pos - len(new_row))
+                # new_row += [-1] * (n_pos - len(new_row))
 
             pos_index = np.random.choice(new_row, n_pos)
 
@@ -257,7 +233,7 @@ class Protein:
 class ProteinDataset(Dataset):
     def __init__(self,
                  dataset_path: str,
-                 training: bool,
+                 sample: bool,
                  contact_type: str = 'cb',
                  n_pos_sampled: int = 1,
                  n_neg_sampled: int = 1,
@@ -273,7 +249,7 @@ class ProteinDataset(Dataset):
         self._truncation_mode = truncation_mode
         self._n_pos_sampled = n_pos_sampled
         self._n_neg_sampled = n_neg_sampled
-        self._training = training
+        self._to_sample = sample
         self._contact_type = contact_type
 
         self._proteins = []
@@ -325,9 +301,9 @@ class ProteinDataset(Dataset):
     def __getitem__(self, item):
         return self.proteins[item](truncation_mode=self._truncation_mode,
                                    truncation_seq_length=self._truncation_seq_length,
-                                   n_pose=self._n_pos_sampled,
+                                   n_pos=self._n_pos_sampled,
                                    n_neg=self._n_neg_sampled,
-                                   to_sample=self._training,
+                                   to_sample=self._to_sample,
                                    contact_type=self._contact_type)
 
     def __len__(self) -> int:
@@ -341,7 +317,7 @@ if __name__ == '__main__':
 
     train_path = r'./dataset/train'
 
-    dataset = ProteinDataset(train_path, training=True)
+    dataset = ProteinDataset(train_path, sample=True)
 
     # parser = PDBParser(QUIET=True)
     # structure = parser.get_structure("prot", os.path.join(r'C:\Progetti\DeepOrigin\dataset\test\1DJA.pdb'))
