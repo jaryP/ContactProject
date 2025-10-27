@@ -9,9 +9,8 @@ loss:
   _target_: loss.MaskedBCE
 training:
   batch_size: 16
-#  accumulation_steps: 8
   budget_token: 5000000
-  truncation_seq_length: 1000
+  truncation_seq_length: 200
   optimizer:
     _target_: torch.optim.Adam
     lr: 0.0001
