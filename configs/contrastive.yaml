@@ -1,0 +1,30 @@
+dataset:
+  _target_: dataset.ProteinDataset
+  contact_type: cb
+  sample: Yes
+  n_pos_sampled: 1
+  n_neg_sampled : 10
+  truncation_mode: random
+  n_files_to_use: 1000
+  cache_dataset: Yes
+loss:
+  _target_: loss.ContrastiveLoss
+training:
+  batch_size: 16
+  accumulation_steps: 15
+  budget_token: 1000000000
+  truncation_seq_length: 200
+  optimizer:
+    _target_: torch.optim.Adam
+    lr: 0.001
+peft:
+  _target_: peft.LoraConfig
+  r: 8
+  lora_alpha: 8
+  target_modules: ["q_proj", "v_proj"]
+  lora_dropout: 0.05
+  bias: "none"
+model:
+  _target_: esm.pretrained.esm2_t6_8M_UR50D
+model_wrapper:
+  _target_: model.ContrastiveWrapper

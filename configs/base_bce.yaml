@@ -1,0 +1,28 @@
+dataset:
+  _target_: dataset.ProteinDataset
+  contact_type: cb
+  sample: No
+  truncation_mode: cut
+  cache_dataset: Yes
+  n_files_to_use: 1000
+loss:
+  _target_: loss.MaskedBCE
+training:
+  batch_size: 2
+  accumulation_steps: 8
+  budget_token: 5000000
+  truncation_seq_length: 1000
+  optimizer:
+    _target_: torch.optim.Adam
+    lr: 0.0001
+peft:
+  _target_: peft.LoraConfig
+  r: 8
+  lora_alpha: 8
+  target_modules: ["q_proj", "v_proj"]
+  lora_dropout: 0.05
+  bias: "none"
+model:
+  _target_: esm.pretrained.esm2_t6_8M_UR50D
+model_wrapper:
+  _target_: model.ContactsWrapper
