@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 
-class BinaryContrastiveLoss(nn.Module):
+class ContrastiveLoss(nn.Module):
     def __init__(self, average=True, detach: bool = False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._detach = detach
@@ -21,31 +21,31 @@ class BinaryContrastiveLoss(nn.Module):
 
         return out
 
-    def forward(self, features, positive_index, negative_index, temperature=1.0):
+    def forward(self, features, pos_indexes, neg_indexes, temperature=1.0, **kwargs):
         device = features.device
 
         features = torch.nn.functional.normalize(features, p=2, dim=-1)
 
-        positive_index = positive_index.to(device)
-        pos_mask = positive_index >= 0
+        pos_indexes = pos_indexes.to(device)
+        pos_mask = pos_indexes >= 0
         mask = pos_mask.any(-1).to(device).float()
 
-        positive_features = self._get_by_indexing(features, positive_index)
-        negative_features = self._get_by_indexing(features, negative_index.to(device))
+        positive_features = self._get_by_indexing(features, pos_indexes)
+        negative_features = self._get_by_indexing(features, neg_indexes.to(device))
 
         pos_dist = torch.nn.functional.cosine_similarity(features.unsqueeze(2), positive_features, dim=-1)
-        pos_dist[~pos_mask] = -1e12
+        # pos_dist[~pos_mask] = -1e12
         neg_dist = torch.nn.functional.cosine_similarity(features.unsqueeze(2), negative_features, dim=-1)
 
         distances = torch.cat((pos_dist, neg_dist), -1) / temperature
 
         loss = pos_dist.exp() / distances.exp().sum(-1, keepdim=True)
 
-        loss = -torch.log1p(loss)
+        loss = -torch.log(loss).mean(-1)
 
         # sum over the positive residuals and mask -1 positions
-        loss = loss * pos_mask
-        loss = loss.sum(-1) / pos_mask.sum(-1)
+        # loss = loss * pos_mask
+        # loss = loss.sum(-1) / pos_mask.sum(-1)
 
         loss = loss * mask
         # remove the affected of padded tokens on the loss

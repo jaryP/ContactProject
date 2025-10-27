@@ -4,3 +4,5 @@ biopython==1.85
 tqdm==4.67.1
 fair-esm==2.0.0
 peft==0.17.1
+hydra-core==1.3.2
+calflops==0.3.2

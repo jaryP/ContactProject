@@ -50,7 +50,7 @@ def get_protein_collate_fn(model_batch_converter):
                 continue
             if k =='offset':
                 others[k] = torch.as_tensor(v)
-            elif k != 'label_matrix':
+            elif k != 'gt_matrix':
                 others[k] = torch.nn.utils.rnn.pad_sequence(v, padding_value=-1, batch_first=True)
             else:
                 others[k] = torch.stack([torch.nn.functional.pad(_v, (0, padded_len - _v.shape[-1] - 2,
@@ -92,7 +92,7 @@ def mcc(y_true: Sequence[np.ndarray], y_pred: Sequence[np.ndarray], is_global=Tr
 
         score = score / len(y_pred)
 
-    return score
+    return score.item()
 
 
 class CustomParser(PDBParser):

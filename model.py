@@ -8,16 +8,7 @@ from torch import nn
 
 class OffsetRotaryEmbedding(torch.nn.Module):
     """
-    The rotary position embeddings from RoFormer_ (Su et. al).
-    A crucial insight from the method is that the query and keys are
-    transformed by rotation matrices which depend on the relative positions.
-    Other implementations are available in the Rotary Transformer repo_ and in
-    GPT-NeoX_, GPT-NeoX was an inspiration
-    .. _RoFormer: https://arxiv.org/abs/2104.09864
-    .. _repo: https://github.com/ZhuiyiTechnology/roformer
-    .. _GPT-NeoX: https://github.com/EleutherAI/gpt-neox
-    .. warning: Please note that this embedding is not registered on purpose, as it is transformative
-        (it does not create the embedding dimension) and will likely be picked up (imported) on a ad-hoc basis
+
     """
 
     def __init__(self, rope: RotaryEmbedding, *_, **__):
@@ -27,6 +18,8 @@ class OffsetRotaryEmbedding(torch.nn.Module):
         self.offsets = None
 
     def __getattr__(self, item):
+        # first, the function search in its own functions and variables.
+        # if item is not found, then search in the parent class
         try:
             return super().__getattr__(item)
         except AttributeError:

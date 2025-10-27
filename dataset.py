@@ -12,7 +12,6 @@ from tqdm import tqdm
 
 from utils import CustomParser, get_protein_collate_fn
 
-
 MAPPING = {'ALA': 'A',
            'ARG': 'R',
            'ASP': 'D',
@@ -74,6 +73,7 @@ def calculate_contacts(positions: np.ndarray, contact_threshold: float = 8):
 
     return idxs, np.asarray(gt)
 
+
 class Protein:
     def __init__(self, chains: Generator[Structure],
                  modres: dict[int, str] = None,
@@ -93,11 +93,6 @@ class Protein:
         _residues_coord = {'ca': [], 'cb': []}
 
         for chain in chains:
-            chain_residues = []
-
-            chain_calpha_coords = []
-            chain_cbeta_coords = []
-
             for ri, r in enumerate(chain):
                 # skip hetero residues
                 if 'CA' not in r or r.id[0].startswith('H_'):
@@ -126,7 +121,6 @@ class Protein:
 
                 # manages edge cases (e.g., file 5OL5.pdb has incomplete modres information)
                 if r_name is not None and r_name != '':
-
                     self._residues += MAPPING[r_name]
                     _residues_coord['ca'].append(c_alpha)
                     _residues_coord['cb'].append(c_beta)
@@ -162,15 +156,14 @@ class Protein:
                 continue
 
             # we only take residuals in the given range, and offset them
-            new_row = [r - mn for r in row if mn <= r < mx]
+            row_subset = [r - mn for r in row if mn <= r < mx]
 
-            # If number of positives is less then total positive.
+            # If number of positives is less than total positive.
             # In that case we use evaluate the residual against itself
-            if len(new_row) < n_pos:
-                new_row += [i - mn] * (n_pos - len(new_row))
-                # new_row += [-1] * (n_pos - len(new_row))
+            if len(row_subset) < n_pos:
+                row_subset += [-1] * (n_pos - len(row_subset))
 
-            pos_index = np.random.choice(new_row, n_pos)
+            pos_index = np.random.choice(row_subset, n_pos)
 
             # zeroing the probability of positive indexes from the sampling list
             p = np.ones_like(indices)
@@ -199,35 +192,35 @@ class Protein:
         residues = self._residues
         label_matrix = self._gt_matrix[contact_type]
 
-        if not to_sample:
-            return {'residues': residues, 'label_matrix': label_matrix, 'length': len(self), 'offset': 0}
-        else:
+        res_range = None
+        if truncation_seq_length is not None:
+            if truncation_seq_length < len(self):
 
-            res_range = None
-            if truncation_seq_length is not None:
-                if truncation_seq_length < len(self):
-                    # mn, mx = 0, len(residues)
-                    if truncation_mode == 'random':
-                        mn = np.random.randint(0, min(len(self) - truncation_seq_length, len(self)))
-                        mx = mn + truncation_seq_length
-                    else:
-                        mn, mx = 0, truncation_seq_length
+                if truncation_mode == 'random':
+                    mn = np.random.randint(0, min(len(self) - truncation_seq_length, len(self)))
+                    mx = mn + truncation_seq_length
+                else:
+                    mn, mx = 0, truncation_seq_length
 
-                    residues = residues[mn:mx]
-                    label_matrix = label_matrix[mn:mx, mn:mx]
-                    res_range = (mn, mx)
+                residues = residues[mn:mx]
+                label_matrix = label_matrix[mn:mx, mn:mx]
+                res_range = (mn, mx)
 
-                    assert len(residues) <= truncation_seq_length
+                assert len(residues) <= truncation_seq_length
 
-            offset = 0 if res_range is None else res_range[0]
+        offset = 0 if res_range is None else res_range[0]
 
-            pos_res, neg_res = self.sample_tuple(contact_type=contact_type,
-                                                 n_pos=n_pos,
-                                                 n_neg=n_neg,
-                                                 residues_range=res_range)
+        ret = {'residues': residues, 'gt_matrix': label_matrix, 'length': len(self), 'offset': offset}
 
-            return {'residues': residues, 'label_matrix': label_matrix,
-                    'pos_res': pos_res, 'neg_res': neg_res, 'length': len(self), 'offset': offset}
+        if to_sample:
+            pos_indexes, neg_indexes = self.sample_tuple(contact_type=contact_type,
+                                                         n_pos=n_pos,
+                                                         n_neg=n_neg,
+                                                         residues_range=res_range)
+
+            ret.update({'pos_indexes': pos_indexes, 'neg_indexes': neg_indexes})
+
+        return ret
 
 
 class ProteinDataset(Dataset):
@@ -339,7 +332,7 @@ if __name__ == '__main__':
     batch = next(iter(loader))
 
     import torch
-    from loss import BinaryContrastiveLoss
+    from loss import ContrastiveLoss
 
     with torch.no_grad():
         results = model(batch['proteins'][-1], repr_layers=[model.num_layers], return_contacts=True)
@@ -347,7 +340,7 @@ if __name__ == '__main__':
 
         features = results['representations'][model.num_layers][:, 1:-1]
 
-        loss = BinaryContrastiveLoss()(features, batch['pos_res'], batch['neg_res'])
+        loss = ContrastiveLoss()(features, batch['pos_res'], batch['neg_res'])
 
         # I used [0:1, 0:1] to avoid removing dimensions that I need later
         zeros = torch.zeros_like(features[0:1, 0:1])
