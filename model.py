@@ -2,6 +2,7 @@ import functools
 from typing import Tuple
 
 import torch
+from esm.model.esm2 import ESM2
 from esm.rotary_embedding import apply_rotary_pos_emb, RotaryEmbedding
 from torch import nn
 
@@ -65,22 +66,29 @@ class OffsetRotaryEmbedding(torch.nn.Module):
 
 
 class ContactsWrapper(nn.Module):
-    def __init__(self, model):
+    """
+    A class that wraps a ESM2 model and returns only the predicted contact using the ContactHead in ESM2
+    """
+
+    def __init__(self, model: ESM2):
         super().__init__()
         self.backbone = model
 
-    def forward(self, input_ids, **kwargs):
-        return self.backbone.predict_contacts(input_ids)
+    def forward(self, tokens_id, **kwargs):
+        return self.backbone.predict_contacts(tokens_id)
 
 
 class ContrastiveWrapper(nn.Module):
-    def __init__(self, model):
+    """
+    A class that wraps a ESM2 model and returns only the predicted contact using the ContactHead in ESM2
+    """
+    def __init__(self, model: ESM2):
         super().__init__()
         self.backbone = model
         self.repr_layers = model.num_layers
 
-    def forward(self, input_ids, **kwargs):
-        h = self.backbone(input_ids, repr_layers=[self.repr_layers])
+    def forward(self, tokens_id, **kwargs):
+        h = self.backbone(tokens_id, repr_layers=[self.repr_layers])
         h = h['representations'][self.repr_layers][:, 1:-1]
 
         if self.training:

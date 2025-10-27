@@ -1,8 +1,7 @@
 import argparse
 import json
 import logging
-import os.path
-import warnings
+import random
 from collections import defaultdict
 from itertools import cycle
 from pathlib import Path
@@ -13,15 +12,12 @@ import numpy as np
 import torch
 import tqdm
 from calflops import calculate_flops
-from esm.rotary_embedding import RotaryEmbedding
 from hydra import compose, initialize
 from omegaconf import OmegaConf
 from peft import get_peft_model
 from torch.utils.data import DataLoader
 
-from dataset import ProteinDataset
-from model import OffsetRotaryEmbedding
-from utils import get_protein_collate_fn, mcc
+from utils import get_protein_collate_fn, mcc, model_testing
 
 
 def main():
@@ -52,9 +48,8 @@ def main():
             logging.StreamHandler()
         ]
     )
-    # log = logging.getLogger(__name__)
 
-    # this is not the best way to use hydra, but i did not want it to be overkilling wrt number of experiments
+    # this is not the best way to use hydra, but I did not want it to be overkilling wrt number of experiments
     initialize(version_base=None, config_path="configs", job_name="test_app")
     cfg = compose(config_name=config_name, return_hydra_config=True)
 
@@ -71,9 +66,15 @@ def main():
 
     logging.info(f'Device in use: {device}')
 
+    np.random.seed(0)
+    torch.manual_seed(0)
+    random.seed(0)
+
     model, alphabet = hydra.utils.instantiate(cfg.model)
     batch_converter = alphabet.get_batch_converter(truncation_seq_length=
                                                    cfg.training.get('truncation_seq_length', None))
+
+    test_batch_converter = alphabet.get_batch_converter(truncation_seq_length=None)
 
     train_dataset = hydra.utils.instantiate(cfg.dataset,
                                             dataset_path=dataset_path / 'train',
@@ -92,9 +93,14 @@ def main():
     batch_size = cfg.training.batch_size
     collate_fn = get_protein_collate_fn(batch_converter)
 
+    train_dataset, dev_dataset = torch.utils.data.random_split(train_dataset, [0.9, 0.1])
+
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, collate_fn=collate_fn, shuffle=True)
+
     test_dataloader = DataLoader(test_dataset, batch_size=cfg.training.get('test_batch_size', batch_size),
-                                 shuffle=False, collate_fn=collate_fn)
+                                 shuffle=False, collate_fn=get_protein_collate_fn(test_batch_converter))
+    dev_dataloader = DataLoader(dev_dataset, batch_size=cfg.training.get('test_batch_size', 1),
+                                shuffle=False, collate_fn=get_protein_collate_fn(test_batch_converter))
 
     if 'peft' in cfg:
         peft_config = hydra.utils.instantiate(cfg.peft)
@@ -122,7 +128,7 @@ def main():
     flops_stat = []
 
     b_i = 0
-    all_scores = defaultdict(list)
+    all_dev_scores = defaultdict(list)
 
     progress_bar = tqdm.tqdm(cycle('looooop'))
     while progress_bar:
@@ -137,9 +143,9 @@ def main():
         for batch in tqdm.tqdm(train_dataloader, leave=False):
             b_i += 1
 
-            last_scores = {k: v[-1] for k, v in all_scores.items()} if len(all_scores) > 0 else None
+            last_scores = {k: v[-1] for k, v in all_dev_scores.items()} if len(all_dev_scores) > 0 else None
             progress_bar.set_postfix({'Percentage budget tokens used': (total_tokens_used / budget_tokens) * 100,
-                                      'last_scores': last_scores})
+                                      'dev_score': last_scores})
 
             proteins = batch['proteins'][-1].to(device)
 
@@ -148,7 +154,7 @@ def main():
                     flops, macs, params = calculate_flops(model=model, args=[proteins[0:1]],
                                                           print_results=False, print_detailed=False,
                                                           output_as_string=False)
-                    flops = flops / 1e9 # Giga flops
+                    flops = flops / 1e9  # Giga flops
                     flops_map[proteins.shape[-1]] = flops
 
             flops = flops_map[proteins.shape[-1]] * len(proteins)
@@ -176,6 +182,8 @@ def main():
                     optimizer.zero_grad()
 
                     epoch_losses.append(loss.item())
+
+                    epoch_budget.append(total_tokens_used / budget_tokens)
             else:
                 optimizer.zero_grad()
                 loss.backward()
@@ -186,50 +194,37 @@ def main():
 
                 epoch_losses.append(loss.item())
 
-            epoch_budget.append(total_tokens_used / budget_tokens)
+                epoch_budget.append(total_tokens_used / budget_tokens)
+
+            if b_i % 20 == 0 or total_tokens_used > budget_tokens:
+                dev_scores = model_testing(model, dev_dataloader)
+
+                for k, v in dev_scores.items():
+                    all_dev_scores[k].append(v)
 
             if total_tokens_used > budget_tokens:
                 break
+
+        optimizer.zero_grad()
 
         losses_stat.append(epoch_losses)
         budget_stat.append(epoch_budget)
         flops_stat.append(epoch_flops)
 
-        model.eval()
-        with torch.no_grad():
-
-            preds = []
-            true = []
-
-            for batch in test_dataloader:
-
-                proteins = batch['proteins'][-1].to(device)
-
-                contacts = model(proteins)
-
-                for c, l, m in zip(torch.split(contacts, 1, 0),
-                                   batch['length'], batch['gt_matrix']):
-                    y = (c[:, :l, :l] > 0.5).float().cpu().numpy()
-                    preds.append(y)
-                    true.append(m[:l, :l].cpu().numpy())
-
-            global_score = mcc(true, preds, is_global=False)
-            score = mcc(true, preds)
-
-            all_scores['global_mcc'].append(global_score)
-            all_scores['score'].append(score)
-
-            # print(global_score, score)
-
         if total_tokens_used > budget_tokens:
             break
 
-    all_scores = dict(all_scores)
+    # test_scores = model_testing(model, test_dataloader)
 
-    with open(saving_path / f'test_results.json', 'w') as f:
-        json.dump(all_scores, f, ensure_ascii=True, indent=4)
+    all_dev_scores = dict(all_dev_scores)
 
-    with open(saving_path / f'train_results.json', 'w') as f:
+    with open(saving_path / f'dev_results.json', 'w') as f:
+        json.dump(all_dev_scores, f, ensure_ascii=True, indent=4)
+
+    # with open(saving_path / f'test_results.json', 'w') as f:
+    #     json.dump(test_scores, f, ensure_ascii=True, indent=4)
+
+    with open(saving_path / f'train_stats.json', 'w') as f:
         json.dump({'loss': losses_stat, 'budget_stat': budget_stat, 'flops_stat': flops_stat},
                   f, ensure_ascii=True, indent=4)
 

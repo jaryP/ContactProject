@@ -5,18 +5,17 @@ dataset:
   n_pos_sampled: 1
   n_neg_sampled : 10
   truncation_mode: random
-  n_files_to_use: 1000
   cache_dataset: Yes
 loss:
   _target_: loss.ContrastiveLoss
 training:
   batch_size: 16
   accumulation_steps: 15
-  budget_token: 1000000000
+  budget_token: 1000000000000
   truncation_seq_length: 200
   optimizer:
     _target_: torch.optim.Adam
-    lr: 0.001
+    lr: 0.0001
 peft:
   _target_: peft.LoraConfig
   r: 8

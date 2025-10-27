@@ -3,6 +3,10 @@ from torch import nn
 
 
 class ContrastiveLoss(nn.Module):
+    """
+    A contrastive supervised loss, which attracts residues with contacts closer and move the other away
+    """
+
     def __init__(self, average=True, detach: bool = False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._detach = detach
@@ -21,7 +25,10 @@ class ContrastiveLoss(nn.Module):
 
         return out
 
-    def forward(self, features, pos_indexes, neg_indexes, temperature=1.0, **kwargs):
+    def forward(self, features: torch.Tensor,
+                pos_indexes: torch.Tensor, neg_indexes: torch.Tensor,
+                temperature: float = 1.0, *args, **kwargs):
+
         device = features.device
 
         features = torch.nn.functional.normalize(features, p=2, dim=-1)
@@ -34,7 +41,6 @@ class ContrastiveLoss(nn.Module):
         negative_features = self._get_by_indexing(features, neg_indexes.to(device))
 
         pos_dist = torch.nn.functional.cosine_similarity(features.unsqueeze(2), positive_features, dim=-1)
-        # pos_dist[~pos_mask] = -1e12
         neg_dist = torch.nn.functional.cosine_similarity(features.unsqueeze(2), negative_features, dim=-1)
 
         distances = torch.cat((pos_dist, neg_dist), -1) / temperature
@@ -42,10 +48,6 @@ class ContrastiveLoss(nn.Module):
         loss = pos_dist.exp() / distances.exp().sum(-1, keepdim=True)
 
         loss = -torch.log(loss).mean(-1)
-
-        # sum over the positive residuals and mask -1 positions
-        # loss = loss * pos_mask
-        # loss = loss.sum(-1) / pos_mask.sum(-1)
 
         loss = loss * mask
         # remove the affected of padded tokens on the loss
@@ -57,12 +59,16 @@ class ContrastiveLoss(nn.Module):
 
 
 class MaskedBCE(nn.Module):
+    """
+    A masked version of the BCEWithLogitsLoss, which also works protein wise by averaging the losses over them
+    """
+
     def __init__(self, average=True, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._inner_loss = nn.BCEWithLogitsLoss(reduction='none')
         self.average = average
 
-    def forward(self, logits, gt_matrix, *args, **kwargs):
+    def forward(self, logits: torch.Tensor, gt_matrix: torch.Tensor, *args, **kwargs):
         B = len(logits)
 
         gt_matrix = gt_matrix.to(logits.device)

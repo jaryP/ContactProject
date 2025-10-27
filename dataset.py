@@ -2,45 +2,22 @@ import os
 import pickle
 
 from collections.abc import Generator
-from typing import List, Tuple
+from typing import List, Tuple, Union, Dict
 
 import numpy as np
 from Bio.PDB.Structure import Structure
-from scipy.spatial.distance import pdist, squareform
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from utils import CustomParser, get_protein_collate_fn
-
-MAPPING = {'ALA': 'A',
-           'ARG': 'R',
-           'ASP': 'D',
-           'CYS': 'C',
-           'CYX': 'C',
-           'GLN': 'Q',
-           'GLU': 'E',
-           'GLY': 'G',
-           'HIS': 'H',
-           'HIE': 'H',
-           'ILE': 'I',
-           'LEU': 'L',
-           'LYS': 'K',
-           'MET': 'M',
-           'PRO': 'P',
-           'SER': 'S',
-           'ASN': 'N',
-           'PHE': 'F',
-           'SEC': 'U',
-           'THR': 'T',
-           'TRP': 'W',
-           'TYR': 'Y',
-           'VAL': 'V'
-           }
+from utils import CustomParser, MAPPING
 
 
-# https://colab.research.google.com/github/facebookresearch/esm/blob/main/examples/contact_prediction.ipynb#scrollTo=n4FBkOUaWuXb&line=1&uniqifier=1
 def extend(a, b, c, L, A, D):
     """
+    Taken from the official repository
+
+    https://colab.research.google.com/github/facebookresearch/esm/blob/main/examples/contact_prediction.ipynb#scrollTo=n4FBkOUaWuXb&line=1&uniqifier=1
+
     input:  3 coords (a,b,c), (L)ength, (A)ngle, and (D)ihedral
     output: 4th coord
     """
@@ -55,7 +32,15 @@ def extend(a, b, c, L, A, D):
     return c + sum([m * d for m, d in zip(m, d)])
 
 
-def calculate_contacts(positions: np.ndarray, contact_threshold: float = 8):
+def calculate_contacts(positions: np.ndarray, contact_threshold: float = 8) -> Tuple[List[np.ndarray], np.ndarray]:
+    """
+    This function calculates the contact indices and the residues ground truth for each redisuals position
+    :param positions: the positions in the space of the redisuals
+    :param contact_threshold: the threshold (in Amstrong unit) for which two residues are considered in contact
+    :return: the first returned value is a list containing the contact indices for each residue,
+        while the second one is the binary ground truth matrix.
+    """
+
     idxs = []
     gt = []
 
@@ -77,15 +62,21 @@ def calculate_contacts(positions: np.ndarray, contact_threshold: float = 8):
 class Protein:
     def __init__(self, chains: Generator[Structure],
                  modres: dict[int, str] = None,
-                 contact_threshold: float = 8.0,
-                 testing_protein: bool = False):
+                 contact_threshold: float = 8.0):
+        """
+        The Protein class. Using this class is possible to sample a subset of the stricture or all the chains.
+        It calculates both Calpha and Cbeta distances. Which one to use can be selected when accessing the data.
+
+        :param chains: a generator returning the chains in the Structure.
+            For this project, we assume that the all the chains belong to the same protein
+        :param modres:
+        :param contact_threshold: the threshold (in Amstrong unit) for which two residues are considered in contact
+        """
 
         assert contact_threshold > 0, 'contact_threshold must be positive'
 
         if modres is None:
             modres = {}
-
-        self._testing_protein = testing_protein
 
         self._residues = ''
 
@@ -131,7 +122,7 @@ class Protein:
         self._contacts_idx = {}
 
         for k, v in _residues_coord.items():
-            ca_contacts_idx, ca_matrix = calculate_contacts(np.asarray(v))
+            ca_contacts_idx, ca_matrix = calculate_contacts(np.asarray(v), contact_threshold=contact_threshold)
 
             self._gt_matrix[k] = ca_matrix
             self._contacts_idx[k] = ca_contacts_idx
@@ -139,7 +130,19 @@ class Protein:
     def __len__(self):
         return len(self._residues)
 
-    def sample_tuple(self, contact_type: str, n_pos: int = 1, n_neg: int = 1, residues_range: Tuple[int, int] = None):
+    def sample_tuple(self,
+                     contact_type: str,
+                     n_pos: int = 1, n_neg: int = 1,
+                     residues_range: Tuple[int, int] = None) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Allow for sampling positive and negative residues for each item in the chain.
+
+        :param contact_type: Which one between Calpha (ca) or Cbeta (cb) to use
+        :param n_pos: number of positive residues (with contact) to sample
+        :param n_neg: number of positive residues (without contact) to sample
+        :param residues_range: which subset of the chain must be extract. The indexes will be returned only within it.
+        :return: two lists, containing respectively positive and negative indexes in the chain
+        """
 
         pos, neg = [], []
 
@@ -155,11 +158,11 @@ class Protein:
             if not mn <= i < mx:
                 continue
 
-            # we only take residuals in the given range, and offset them
+            # we only take residues in the given range, and offset them
             row_subset = [r - mn for r in row if mn <= r < mx]
 
             # If number of positives is less than total positive.
-            # In that case we use evaluate the residual against itself
+            # In that case we use evaluate the residue against itself
             if len(row_subset) < n_pos:
                 row_subset += [-1] * (n_pos - len(row_subset))
 
@@ -184,7 +187,25 @@ class Protein:
                  truncation_seq_length: int = None,
                  n_pos: int = 1, n_neg: int = 1,
                  to_sample: bool = True,
-                 *args, **kwargs):
+                 *args, **kwargs) -> Dict[str, Union[np.ndarray, int, float]]:
+
+        """
+        The function that returns a dictionary containing all the information about the protein
+
+        :param contact_type:  Which one between Calpha (ca) or Cbeta (cb) to use
+        :param truncation_mode:  How the chain must be truncated.
+            Can be cut or random. In the first case the chain is truncated at position truncation_seq_length,
+            in the latter a random sub-chain of length truncation_seq_length is sampled.
+        :param truncation_seq_length: the returned lenght of the chain, if the original one is longer.
+        :param n_pos: number of positive residues (with contact) to sample
+        :param n_neg: number of positive residues (without contact) to sample
+        :param to_sample: if positive and negative indexes must be sampled
+        :return: a dictionary so defined:
+                    {'residues': the residues of the chain,
+                    'gt_matrix': the binary ground truth matrix,
+                    'length': the length of the sequence,
+                    'offset': the offset of the sub-sequence, in case truncation_mode=random. Otherwise zero.}
+        """
 
         assert contact_type in self._gt_matrix.keys(), f'contact_type must be in {list(self._gt_matrix.keys())}.'
         assert truncation_mode in ['random', 'cut']
@@ -235,6 +256,23 @@ class ProteinDataset(Dataset):
                  n_files_to_use: int = -1,
                  truncation_seq_length: int = None,
                  truncation_mode: str = 'cut'):
+        """
+        A dataset which is a collection of proteins. All the info used to get the proteins are stored
+        whithin this class to avoid errors when moving a dataset around.
+
+        :param dataset_path: The path of the protein files
+        :param sample: if the positive-negative indexes must be sampled from the protein
+        :param contact_type: Which one between Calpha (ca) or Cbeta (cb) to use
+        :param n_pos_sampled:  number of positive residues (with contact) to sample
+        :param n_neg_sampled: number of positive residues (without contact) to sample
+        :param threshold: the threshold (in Amstrong unit) for which two residues are considered in contact
+        :param cache_dataset: id the processed proteins must be stored on disk using Pickle
+        :param n_files_to_use: the number of files to process. For debugging purposes.
+        :param truncation_seq_length: the returned length of the chain, if the original one is longer.
+        :param truncation_mode: How the chain must be truncated.
+            Can be cut or random. In the first case the chain is truncated at position truncation_seq_length,
+            in the latter a random sub-chain of length truncation_seq_length is sampled.
+        """
 
         assert contact_type in ['ca', 'cb'], 'contact_type must be either "ca" or "cb"'
 
@@ -291,7 +329,12 @@ class ProteinDataset(Dataset):
     def proteins(self) -> List[Protein]:
         return self._proteins
 
-    def __getitem__(self, item):
+    def __getitem__(self, item: int) -> Dict[str, Union[np.ndarray, int, float]]:
+        """
+        :param item: index of the protein to extract
+        :return: See Protein.__call__ for details.
+        """
+
         return self.proteins[item](truncation_mode=self._truncation_mode,
                                    truncation_seq_length=self._truncation_seq_length,
                                    n_pos=self._n_pos_sampled,
@@ -301,87 +344,3 @@ class ProteinDataset(Dataset):
 
     def __len__(self) -> int:
         return len(self._proteins)
-
-
-if __name__ == '__main__':
-    from torch.utils.data import DataLoader
-
-    all_files = []
-
-    train_path = r'./dataset/train'
-
-    dataset = ProteinDataset(train_path, sample=True)
-
-    # parser = PDBParser(QUIET=True)
-    # structure = parser.get_structure("prot", os.path.join(r'C:\Progetti\DeepOrigin\dataset\test\1DJA.pdb'))
-    # chains = structure.get_chains()
-    #
-    # protein = Protein(chains)
-    # pos, neg = protein.sample_tuple()
-    # b1 = protein()
-    #
-    import esm
-
-    # import torch
-    #
-
-    model, alphabet = esm.pretrained.esm2_t12_35M_UR50D()
-    batch_converter = alphabet.get_batch_converter()
-
-    loader = DataLoader(dataset, batch_size=8, collate_fn=get_protein_collate_fn(batch_converter))
-    batch = next(iter(loader))
-
-    import torch
-    from loss import ContrastiveLoss
-
-    with torch.no_grad():
-        results = model(batch['proteins'][-1], repr_layers=[model.num_layers], return_contacts=True)
-        contact_map = results["contacts"][0]
-
-        features = results['representations'][model.num_layers][:, 1:-1]
-
-        loss = ContrastiveLoss()(features, batch['pos_res'], batch['neg_res'])
-
-        # I used [0:1, 0:1] to avoid removing dimensions that I need later
-        zeros = torch.zeros_like(features[0:1, 0:1])
-
-        pos_res = batch['pos_res'].expand(-1, -1, zeros.shape[-1])
-        mask = (pos_res >= 0).unsqueeze(-1)
-
-        safe_indices = pos_res.clamp(min=0)
-
-        out = torch.gather(features, dim=1, index=safe_indices)  # (B, T, D)
-
-        # pos_tokens = torch.gather(features, dim=1, index=batch['pos_res'].unsqueeze(0).expand(-1, -1, zeros.shape[-1])).detach()
-        pos_tokens = torch.where(pos_res >= 0,
-                                 # expand is more verbose but does not copy the data
-                                 torch.gather(features, dim=1, index=pos_res.expand(-1, -1, zeros.shape[-1])),
-                                 zeros).detach()
-
-    a = 0
-
-    #
-    # # {'residues': self._residues, 'label_matrix': pos_matrix,
-    # #  'pos_res': pos_res, 'neg_res': neg_res}
-    #
-    # batch = protein()
-    #
-    # data = [("protein1", batch['residues'])]
-    # batch_labels, batch_strs, batch_tokens = batch_converter(data)
-    #
-    # with torch.no_grad():
-    #     results = model(batch_tokens, repr_layers=[model.num_layers], return_contacts=True)
-    #     contact_map = results["contacts"][0].cpu()
-    #
-    #     # remove bos and eos
-    #     features = results['representations'][model.num_layers][:, 1:-1]
-#
-#     pos_tokens = torch.gather(features, dim=1, index=torch.tensor(batch['pos_res']).unsqueeze(0).expand(-1, -1, features.shape[-1])).detach()
-#     neg_tokens = torch.gather(features, dim=1, index=torch.tensor(batch['neg_res']).unsqueeze(0).expand(-1, -1, features.shape[-1])).detach()
-#
-#     pos_loss = torch.norm(features - pos_tokens, p=2, dim=-1)
-#     neg_loss = 1 / (torch.norm(features - neg_tokens, p=2, dim=-1) + 1e-6)
-#
-#     loss = -(pos_loss + neg_loss).log()
-#
-#     a = 0

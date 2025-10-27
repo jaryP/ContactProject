@@ -4,7 +4,6 @@ dataset:
   sample: No
   truncation_mode: cut
   cache_dataset: Yes
-#  n_files_to_use: 1000
 loss:
   _target_: loss.MaskedBCE
 training:

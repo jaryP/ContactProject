@@ -4,14 +4,13 @@ dataset:
   sample: No
   truncation_mode: cut
   cache_dataset: Yes
-#  n_files_to_use: 1000
 loss:
   _target_: loss.MaskedBCE
 training:
-  batch_size: 16
-#  accumulation_steps: 8
+  batch_size: 2
+  accumulation_steps: 8
   budget_token: 5000000
-  truncation_seq_length: 1000
+  truncation_seq_length: 1020
   optimizer:
     _target_: torch.optim.Adam
     lr: 0.0001
